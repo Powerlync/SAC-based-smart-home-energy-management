@@ -143,4 +143,4 @@ while not done:
     t += 1
 
 
-print(f"✅ Total evaluation reward: {total_reward:.2f}")
+print(f" Total evaluation reward: {total_reward:.2f}")
