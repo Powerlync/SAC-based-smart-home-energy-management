@@ -6,9 +6,6 @@ from stable_baselines3.common.monitor import Monitor
 from smart_home_env import SmartHomeEnv
 import os
 
-# ============================================================
-# CONFIG
-# ============================================================
 DATA_PATH = "helsinki.csv"
 MODEL_PATH = "sac_.zip"
 SEED = 42
@@ -18,26 +15,16 @@ HOURS_PER_EPISODE = 24
 
 assert os.path.exists(MODEL_PATH), f"❌ Model not found: {MODEL_PATH}"
 
-# ============================================================
-# LOAD ENV + MODEL
-# ============================================================
 env = Monitor(SmartHomeEnv(DATA_PATH, seed=SEED))
 model = SAC.load(MODEL_PATH, env=env)
 
 base_env = env.env  # unwrap Monitor
 
-# ============================================================
-# LOGGING
-# ============================================================
 t_hist, load_hist, pv_hist, chp_el_hist, grid_hist, bs_hist = [], [], [], [], [], []
 soc_bs_hist, soc_ev_hist, T_in_hist, T_hw_hist, reward_hist = [], [], [], [], []
 
 t = 0
 
-
-# ============================================================
-# RUN 365 EPISODES × 24 HOURS
-# ============================================================
 for ep in range(N_EPISODES):
     obs, _ = env.reset()
     done = False
@@ -81,10 +68,6 @@ for ep in range(N_EPISODES):
 
         t += 1
         h += 1
-
-# ============================================================
-# Convert logs to DataFrame
-# ============================================================
 df = pd.DataFrame({
     "timestep": t_hist,
     "load": load_hist,
@@ -99,24 +82,15 @@ df = pd.DataFrame({
     "reward": reward_hist
 })
 
-# ============================================================
-# YEARLY AVERAGES
-# ============================================================
 hours_per_year = 8760
 df["year"] = df["timestep"] // hours_per_year
 yearly_avg = df.groupby("year")[["load", "pv", "chp", "grid"]].mean()
 
-# ============================================================
-# GRADIENTS
-# ============================================================
 df["grad_load"] = np.gradient(df["load"])
 df["grad_pv"] = np.gradient(df["pv"])
 df["grad_chp"] = np.gradient(df["chp"])
 df["grad_grid"] = np.gradient(df["grid"])
 
-# ============================================================
-# PLOTS
-# ============================================================
 plt.figure(figsize=(14, 5))
 plt.plot(df["timestep"], df["load"], label="Total Demand", color="black")
 plt.plot(df["timestep"], df["pv"], label="PV", color="gold")
@@ -215,29 +189,23 @@ imbalance = np.max(
 )
 print(f"Max power imbalance: {imbalance:.6f} kW")
 
-# ============================================================
-# FULL-YEAR COST & CO₂ EMISSIONS (DO THIS FIRST)
-# ============================================================
 N_YEAR = len(df)
 
-# Ensure price and carbon arrays match df length
 price_buy = np.tile(base_env.df["price_eur_mwh"].values / 1000.0, N_YEAR // len(base_env.df) + 1)[:N_YEAR]  # €/kWh
 price_sell = np.tile(base_env.df["price_sell_eur_mwh"].values / 1000.0, N_YEAR // len(base_env.df) + 1)[:N_YEAR]  # €/kWh
 carbon_grid = np.tile(base_env.df["co2_g_kwh"].values / 1000.0, N_YEAR // len(base_env.df) + 1)[:N_YEAR]  # kg/kWh
 
-# Grid import/export (FULL YEAR)
+
 grid_import = df["grid"].clip(lower=0).values
 grid_export = (-df["grid"].clip(upper=0)).values
 
-# Grid electricity cost & emissions
 grid_cost = grid_import * price_buy - grid_export * price_sell
 grid_emissions = grid_import * carbon_grid
 
-# CHP fuel, cost & emissions
 chp_fuel = df["chp"].values / base_env.eta_chp_el
 gas_price = 1.2  # €/kWh
 chp_cost = chp_fuel * gas_price
-carbon_gas = 0.202  # kg CO₂ per kWh of natural gas
+carbon_gas = 0.202  
 chp_emissions = chp_fuel * carbon_gas
 
 
@@ -245,9 +213,6 @@ chp_emissions = chp_fuel * carbon_gas
 total_cost = grid_cost.sum() + chp_cost.sum()
 total_emissions = grid_emissions.sum() + chp_emissions.sum()
 
-# ============================================================
-# THERMAL COMFORT VIOLATIONS (FULL YEAR)
-# ============================================================
 df["T_in_violation"] = (df["T_in"] < base_env.T_in_min) | (df["T_in"] > base_env.T_in_max)
 df["T_hw_violation"] = (df["T_hw"] < base_env.T_hw_min) | (df["T_hw"] > base_env.T_hw_max)
 
@@ -255,16 +220,10 @@ comfort_hours = int(df["T_in_violation"].sum())
 hw_hours = int(df["T_hw_violation"].sum())
 comfort_rate = comfort_hours / N_YEAR * 100
 
-# ============================================================
-# BATTERY USAGE & CONTROL SMOOTHNESS
-# ============================================================
 df["bs_ramp"] = np.abs(np.diff(df["bs"], prepend=0))
 battery_throughput = np.abs(df["bs"]).sum()
 avg_ramp_rate = df["bs_ramp"].mean()
 
-# ============================================================
-# HEURISTIC BASELINE (PV-FIRST, NO STORAGE, FULL YEAR)
-# ============================================================
 load = np.tile(base_env.df["load_kw"].values, N_YEAR // len(base_env.df) + 1)[:N_YEAR]
 pv = np.tile(base_env.df["irradiance_kw_m2"].values, N_YEAR // len(base_env.df) + 1)[:N_YEAR]
 
@@ -275,9 +234,7 @@ baseline_emissions = np.sum(grid_baseline * carbon_grid)
 cost_saving = (baseline_cost - total_cost) / baseline_cost * 100
 em_saving = (baseline_emissions - total_emissions) / baseline_emissions * 100
 
-# ============================================================
-# FINAL KPI SUMMARY (REPORT-READY)
-# ============================================================
+
 print("\n================ FINAL KPI SUMMARY ================")
 print(f"Total Energy Cost (RL):        {total_cost:.2f} €")
 print(f"Total Energy Cost (Baseline):  {baseline_cost:.2f} €")
@@ -301,9 +258,6 @@ df_best = df[df["day"] == best_day]
 
 print(f"\nBest day: Day {best_day} | Total reward = {daily_reward.loc[best_day]:.2f}")
 
-# ============================================================
-# THERMAL STATES – BEST DAY
-# ============================================================
 plt.figure(figsize=(10, 4))
 plt.plot(df_best["timestep"], df_best["T_in"], label="Indoor Temperature", linewidth=2)
 plt.plot(df_best["timestep"], df_best["T_hw"], label="Hot Water Temperature", linewidth=2)

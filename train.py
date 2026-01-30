@@ -9,20 +9,11 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.logger import configure
 
 from shenv import SmartHomeEnv  # heat-led CHP env
-
-
-# ============================================================
-# CONFIG
-# ============================================================
 DATA_PATH = "helsinki.csv"
-TOTAL_TIMESTEPS = 50000
+TOTAL_TIMESTEPS = 500000
 N_ENVS = 1
 SEED = 42
 
-
-# ============================================================
-# ENV FACTORY
-# =========================x===================================
 def make_env():
     env = SmartHomeEnv(DATA_PATH, seed=SEED)
     return Monitor(env)
@@ -35,26 +26,16 @@ vec_env = make_vec_env(
 )
 
 
-# ============================================================
-# POLICY CONFIG
-# ============================================================
 policy_kwargs = dict(
     net_arch=[256, 256],
 )
 
 
-# ============================================================
-# LOGGER
-# ============================================================
 logger = configure(
     folder="./sac_logs/",
     format_strings=["stdout", "csv"],
 )
 
-
-# ============================================================
-# MODEL
-# ============================================================
 model = SAC(
     policy="MlpPolicy",
     env=vec_env,
@@ -75,9 +56,6 @@ model = SAC(
 model.set_logger(logger)
 
 
-# ============================================================
-# CALLBACKS
-# ============================================================
 checkpoint_callback = CheckpointCallback(
     save_freq=10_000,
     save_path="./checkpoints/",
@@ -96,22 +74,15 @@ eval_callback = EvalCallback(
 )
 
 
-# ============================================================
-# TRAIN
-# ============================================================
 model.learn(
     total_timesteps=TOTAL_TIMESTEPS,
     callback=[checkpoint_callback, eval_callback],
 )
 
 model.save("sac_")
-print("\n✅ Training completed. Model saved.\n")
+print("\nTraining completed. Model saved.\n")
 
 
-
-# ============================================================
-# EVALUATION ROLLOUT
-# ============================================================
 env = Monitor(SmartHomeEnv(DATA_PATH, seed=SEED))
 obs, _ = env.reset()
 
@@ -132,12 +103,8 @@ while not done:
     done = terminated or truncated
     total_reward += reward
 
-    base_env = env.env  # unwrap Monitor
+    base_env = env.env  
     row = base_env.df.iloc[base_env.t]
-
-    # --------------------------------------------------------
-    # Reconstruct power flows (EXACTLY as in environment)
-    # --------------------------------------------------------
     P_bs = base_env.P_bs_max * action[0]
     P_ev = (
         base_env.P_ev_max * max(action[1], 0)
@@ -145,7 +112,6 @@ while not done:
     )
     P_hw = base_env.P_hw_max * max(action[2], 0)
 
-    # Heat-led CHP (no action!)
     heat_deficit = max(0.0, base_env.T_target - base_env.T_in)
     P_chp_th = min(
         heat_deficit * base_env.C_air,
@@ -168,10 +134,6 @@ while not done:
 
     P_grid = P_demand - P_supply
     
-
-    # --------------------------------------------------------
-    # LOG
-    # --------------------------------------------------------
     load_trace.append(P_demand)
     pv_trace.append(row["pv_kw"])
     chp_trace.append(P_chp_el)
@@ -182,9 +144,3 @@ while not done:
 
 
 print(f"✅ Total evaluation reward: {total_reward:.2f}")
-
-
-
-# ============================================================
-# PLOTS
-# ============================================================
