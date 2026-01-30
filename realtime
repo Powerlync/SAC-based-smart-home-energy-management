@@ -1,0 +1,167 @@
+import os
+import time
+import requests
+import pandas as pd
+import numpy as np
+from datetime import timedelta
+from dotenv import load_dotenv
+from stable_baselines3 import SAC
+load_dotenv()
+
+API_KEY = os.getenv("FINGRID_API_KEY")
+if API_KEY is None:
+    raise RuntimeError("FINGRID_API_KEY not found")
+
+BASE_URL = "https://data.fingrid.fi/api/data"
+
+DATASETS = {
+    "price_eur_mwh": 74,
+    "load_mw": 124,
+    "pv_mw": 248,
+    "co2_g_kwh": 265
+}
+
+CSV_PATH = "smart_home_ev_sac_dataset.csv"
+MODEL_PATH = "sac_smarthome_ev.zip"
+def fetch_updated_timestamps(dataset_ids, days=1):
+    headers = {"x-api-key": API_KEY}
+    params = {
+        "datasets": ",".join(map(str, dataset_ids)),
+        "days": days,
+        "pageSize": 500,
+        "page": 1
+    }
+
+    rows = []
+
+    while True:
+        r = requests.get(f"{BASE_URL}/updates", headers=headers, params=params)
+        r.raise_for_status()
+        data = r.json()
+
+        rows.extend(data.get("data", []))
+
+        pagination = data.get("pagination")
+        if pagination is None or pagination.get("nextPage") is None:
+            break
+
+        params["page"] = pagination["nextPage"]
+        time.sleep(0.3)
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["startTime"] = pd.to_datetime(df["startTime"])
+    return df
+def fetch_values(dataset_id, timestamps):
+    headers = {"x-api-key": API_KEY}
+    rows = []
+
+    for ts in timestamps:
+        params = {
+            "datasets": dataset_id,
+            "startTime": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "endTime": (ts + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
+
+        r = requests.get(BASE_URL, headers=headers, params=params)
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            rows.extend(data)
+
+        time.sleep(0.2)
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df["startTime"] = pd.to_datetime(df["startTime"])
+    return df[["startTime", "value"]]
+def update_database(csv_path, updates):
+    df = pd.read_csv(csv_path, parse_dates=["startTime"])
+    df.set_index("startTime", inplace=True)
+
+    updates.set_index("startTime", inplace=True)
+    df.update(updates)
+
+    df.sort_index(inplace=True)
+    df.reset_index(inplace=True)
+    df.to_csv(csv_path, index=False)
+
+    return df
+def build_observation(row):
+    return np.array([
+        row.price_norm,
+        row.co2_norm,
+        row.load_kw,
+        row.pv_kw,
+        row.T_out_C,
+        row.T_in_C,
+        row.hot_water_draw,
+        row.EV_connected,
+        row.EV_energy_req_kWh,
+        row.hour,
+        row.dayofweek,
+        row.month
+    ], dtype=np.float32)
+
+def compute_reward(row, action):
+    charging_power = action[0]  # kW
+
+    cost = charging_power * row.price_eur_mwh / 1000
+    co2  = charging_power * row.co2_g_kwh / 1000
+
+    comfort_penalty = max(0, abs(row.T_in_C - 21) - 1)
+
+    reward = - (cost + 0.001 * co2 + 0.5 * comfort_penalty)
+    return reward
+
+def evaluate_sac(model, df, horizon=24):
+    rewards = []
+
+    for _, row in df.tail(horizon).iterrows():
+        obs = build_observation(row)
+        action, _ = model.predict(obs, deterministic=True)
+        reward = compute_reward(row, action)
+        rewards.append(reward)
+
+    return np.mean(rewards)
+def realtime_test_loop():
+    print("🔄 Loading SAC model...")
+    model = SAC.load(MODEL_PATH)
+
+    print("📂 Loading dataset...")
+    df = pd.read_csv(CSV_PATH, parse_dates=["startTime"])
+
+    print("🚀 Starting real-time evaluation loop")
+
+    while True:
+        updates = fetch_updated_timestamps(DATASETS.values(), days=1)
+
+        if updates.empty:
+            print("⏳ No new Fingrid updates")
+            time.sleep(1800)
+            continue
+
+        print(f"🔄 {len(updates)} updated timestamps detected")
+
+        for name, dataset_id in DATASETS.items():
+            ts = updates.loc[updates["datasetId"] == dataset_id, "startTime"]
+            if ts.empty:
+                continue
+
+            values = fetch_values(dataset_id, ts.unique())
+            if values.empty:
+                continue
+
+            values.rename(columns={"value": name}, inplace=True)
+            df = update_database(CSV_PATH, values)
+
+        score = evaluate_sac(model, df)
+        print(f"📊 Online SAC score (last 24h): {score:.4f}")
+
+        time.sleep(1800)  # 30 min
+if __name__ == "__main__":
+    realtime_test_loop()
+

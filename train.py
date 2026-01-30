@@ -15,7 +15,7 @@ from shenv import SmartHomeEnv  # heat-led CHP env
 # CONFIG
 # ============================================================
 DATA_PATH = "helsinki.csv"
-TOTAL_TIMESTEPS = 500000
+TOTAL_TIMESTEPS = 50000
 N_ENVS = 1
 SEED = 42
 
@@ -106,6 +106,7 @@ model.learn(
 
 model.save("sac_")
 print("\n✅ Training completed. Model saved.\n")
+
 
 
 # ============================================================
